@@ -96,25 +96,35 @@ def run(cfg: DictConfig) -> dict[int, sio.Labels]:
     """
     pred_cfg = Config(cfg)
 
-    if "checkpoints" in cfg.keys():
+    # update with parameters for batch train job
+    if "batch_config" in cfg.keys():
         try:
             index = int(os.environ["POD_INDEX"])
-        # For testing without deploying a job on runai
-        except KeyError:
-            index = input("Pod Index Not found! Please choose a pod index: ")
+        except KeyError as e:
+            index = int(
+                input(f"{e}. Assuming single run!\nPlease input task index to run:")
+            )
 
-        logger.info(f"Pod Index: {index}")
+        hparams_df = pd.read_csv(cfg.batch_config)
+        hparams = hparams_df.iloc[index].to_dict()
+        _ = hparams.pop("Unnamed: 0", None)
 
-        checkpoints = pd.read_csv(cfg.checkpoints)
-        checkpoint = checkpoints.iloc[index]
+        if pred_cfg.set_hparams(hparams):
+            logger.info("Updated the following hparams to the following values")
+            logger.info(hparams)
     else:
-        checkpoint = pred_cfg.cfg.ckpt_path
+        hparams = {}
 
+    checkpoint = pred_cfg.cfg.ckpt_path
+
+    logger.info(f"Running inference with model from {checkpoint}")
     model = GTRRunner.load_from_checkpoint(checkpoint)
+
     tracker_cfg = pred_cfg.get_tracker_cfg()
-    logger.info("Updating tracker hparams")
+
     model.tracker_cfg = tracker_cfg
     model.tracker = Tracker(**model.tracker_cfg)
+
     logger.info(f"Using the following tracker:")
     logger.info(model.tracker)
 
@@ -124,12 +134,14 @@ def run(cfg: DictConfig) -> dict[int, sio.Labels]:
     os.makedirs(outdir, exist_ok=True)
 
     for label_file, vid_file in zip(labels_files, vid_files):
+        logger.info(f"Tracking {label_file} - {vid_file}...")
         dataset = pred_cfg.get_dataset(
             label_files=[label_file], vid_files=[vid_file], mode="test"
         )
         dataloader = pred_cfg.get_dataloader(dataset, mode="test")
         preds = track(model, trainer, dataloader)
         outpath = os.path.join(outdir, f"{Path(label_file).stem}.dreem_inference.slp")
+        logger.info(f"Saving results to {outpath}...")
         preds.save(outpath)
 
     return preds

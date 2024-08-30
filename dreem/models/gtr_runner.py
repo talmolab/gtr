@@ -301,7 +301,7 @@ class GTRRunner(LightningModule):
                 avg_result = results_df[key].mean()
                 results_file.attrs.create(key, avg_result)
             for i, (metrics, frames) in enumerate(zip(metrics_dict, preds)):
-                vid_name = frames[0].vid_name.split("/")[-1].split(".")[0]
+                vid_name = frames[0].vid_name.split("/")[-1]
                 vid_group = results_file.require_group(vid_name)
                 clip_group = vid_group.require_group(f"clip_{i}")
                 for key, val in metrics.items():
@@ -310,11 +310,18 @@ class GTRRunner(LightningModule):
                     if metrics.get("num_switches", 0) > 0:
                         _ = frame.to_h5(
                             clip_group,
-                            frame.get_gt_track_ids().cpu().numpy(),
+                            [
+                                instance.gt_track_id.item()
+                                for instance in frame.instances
+                            ],
                             save={"crop": True, "features": True, "embeddings": True},
                         )
                     else:
                         _ = frame.to_h5(
-                            clip_group, frame.get_gt_track_ids().cpu().numpy()
+                            clip_group,
+                            [
+                                instance.gt_track_id.item()
+                                for instance in frame.instances
+                            ],
                         )
         self.test_results = {"metrics": [], "preds": [], "save_path": fname}

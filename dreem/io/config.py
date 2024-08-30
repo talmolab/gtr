@@ -174,9 +174,9 @@ class Config:
             labels_path = f"{dir_cfg.path}/*{labels_suff}"
             vid_path = f"{dir_cfg.path}/*{vid_suff}"
             logger.debug(f"Searching for labels matching {labels_path}")
-            label_files = glob.glob(labels_path)
+            label_files = sorted(glob.glob(labels_path))
             logger.debug(f"Searching for videos matching {vid_path}")
-            vid_files = glob.glob(vid_path)
+            vid_files = sorted(glob.glob(vid_path))
             logger.debug(f"Found {len(label_files)} labels and {len(vid_files)} videos")
 
         else:
@@ -197,7 +197,7 @@ class Config:
         mode: str,
         label_files: list[str] | None = None,
         vid_files: list[str | list[str]] = None,
-    ) -> "SleapDataset" | "MicroscopyDataset" | "CellTrackingDataset":
+    ) -> "SleapDataset" | "MicroscopyDataset" | "CellTrackingDataset" | None:
         """Getter for datasets.
 
         Args:
@@ -230,33 +230,37 @@ class Config:
                 dataset_params.slp_files = label_files
             if vid_files is not None:
                 dataset_params.video_files = vid_files
-            return SleapDataset(**dataset_params)
+            dataset = SleapDataset(**dataset_params)
 
         elif "tracks" in dataset_params or "source" in dataset_params:
             if label_files is not None:
                 dataset_params.tracks = label_files
             if vid_files is not None:
                 dataset_params.videos = vid_files
-            return MicroscopyDataset(**dataset_params)
+            dataset = MicroscopyDataset(**dataset_params)
 
         elif "raw_images" in dataset_params:
             if label_files is not None:
                 dataset_params.gt_images = label_files
             if vid_files is not None:
                 dataset_params.raw_images = vid_files
-            return CellTrackingDataset(**dataset_params)
+            dataset = CellTrackingDataset(**dataset_params)
 
         else:
             raise ValueError(
                 "Could not resolve dataset type from Config! Please include \
                 either `slp_files` or `tracks`/`source`"
             )
+        if len(dataset) == 0:
+            logger.warn(f"Length of {mode} dataset is {len(dataset)}! Returning None")
+            return None
+        return dataset
 
     def get_dataloader(
         self,
-        dataset: "SleapDataset" | "MicroscopyDataset" | "CellTrackingDataset",
+        dataset: "SleapDataset" | "MicroscopyDataset" | "CellTrackingDataset" | None,
         mode: str,
-    ) -> torch.utils.data.DataLoader:
+    ) -> torch.utils.data.DataLoader | None:
         """Getter for dataloader.
 
         Args:
@@ -267,6 +271,15 @@ class Config:
         Returns:
             A torch dataloader for `dataset` with parameters configured as specified
         """
+        if dataset is None:
+            logger.warn(f"{mode} dataset passed was `None`! Returning `None`")
+            return None
+    
+        elif len(dataset) == 0:
+            logger.warn(f"Length of {mode} dataset is {len(dataset)}! Returning `None`")
+            return None
+        
+
         if mode.lower() == "train":
             dataloader_params = self.cfg.dataloader.train_dataloader
         elif mode.lower() == "val":
@@ -284,13 +297,20 @@ class Config:
         else:
             pin_memory = False
 
-        return torch.utils.data.DataLoader(
+        dataloader = torch.utils.data.DataLoader(
             dataset=dataset,
             batch_size=1,
             pin_memory=pin_memory,
             collate_fn=dataset.no_batching_fn,
             **dataloader_params,
         )
+
+        if len(dataloader) == 0:
+            logger.warn(
+                f"Length of {mode} dataloader is {len(dataloader)}! Returning `None`"
+            )
+            return None
+        return dataloader
 
     def get_optimizer(self, params: Iterable) -> torch.optim.Optimizer:
         """Getter for optimizer.
@@ -396,7 +416,7 @@ class Config:
                 filename=f"{{epoch}}-{{{metric}}}",
                 **checkpoint_params,
             )
-            checkpointer.CHECKPOINT_NAME_LAST = f"{{epoch}}-best-{{{metric}}}"
+            checkpointer.CHECKPOINT_NAME_LAST = f"{{epoch}}-final-{{{metric}}}"
             checkpointers.append(checkpointer)
         return checkpointers
 

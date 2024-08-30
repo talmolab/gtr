@@ -323,6 +323,7 @@ class Embedding(torch.nn.Module):
         """
         temp_lookup = self.lookup
         N = times.shape[0]
+        times = times / times.max()
 
         left_ind, right_ind, left_weight, right_weight = self._compute_weights(times)
 
