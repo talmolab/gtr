@@ -507,3 +507,66 @@ def test_augmentations(two_flies, ten_icy_particles):
     b = augs_instances[0].get_crops()
 
     assert not torch.all(a.eq(b))
+
+
+def test_train_test_split(two_flies):
+    """Test automatic train-val-test-splits
+
+    Args:
+        two_flies: flies fixture used for testing
+    """
+    augmentations = {
+        "Rotate": {"limit": 45, "p": 1.0},
+        "GaussianBlur": {"blur_limit": (3, 7), "sigma_limit": 0, "p": 1.0},
+        "GaussNoise": {
+            "var_limit": (10.0, 50.0),
+            "mean": 0,
+            "per_channel": True,
+            "p": 1.0,
+        },
+    }
+
+    train_ds = SleapDataset(
+        [two_flies[0]], [two_flies[1]], clip_length=1, augmentations=augmentations
+    )
+
+    ds_length = len(train_ds)
+
+    splits = (0.7, 0.2, 0.1)
+    tracking_ds = TrackingDataset(train_ds=train_ds, splits=splits)
+    tracking_ds.setup("fit")
+
+    assert len(tracking_ds.train_ds) == int(ds_length * splits[0])
+    assert len(tracking_ds.val_ds) == int(ds_length * splits[1])
+    assert len(tracking_ds.test_ds) == int(ds_length * splits[-1])
+
+    assert tracking_ds.train_ds.dataset.augmentations is not None
+    assert tracking_ds.val_ds.dataset.augmentations is None
+    assert tracking_ds.test_ds.dataset.augmentations is None
+
+    tracking_ds = TrackingDataset(train_ds=train_ds, splits=splits[:-1])
+    tracking_ds.setup("fit")
+
+    assert len(tracking_ds.train_ds) == int(ds_length * splits[0])
+    assert len(tracking_ds.val_ds) == int(ds_length * splits[1])
+    assert tracking_ds.test_ds is None
+
+    assert tracking_ds.train_ds.dataset.augmentations is not None
+    assert tracking_ds.val_ds.dataset.augmentations is None
+
+    val_ds = SleapDataset([two_flies[0]], [two_flies[1]], clip_length=1)
+
+    ds_length = len(val_ds)
+
+    splits = (0.5, 0.5)
+
+    tracking_ds = TrackingDataset(train_ds=train_ds, val_ds=val_ds, splits=splits)
+    tracking_ds.setup("fit")
+
+    assert len(tracking_ds.train_ds) == len(train_ds)
+    assert len(tracking_ds.val_ds) == int(ds_length * splits[0])
+    assert len(tracking_ds.test_ds) == int(ds_length * splits[1])
+
+    assert tracking_ds.train_ds.augmentations is not None
+    assert tracking_ds.val_ds.dataset.augmentations is None
+    assert tracking_ds.test_ds.dataset.augmentations is None

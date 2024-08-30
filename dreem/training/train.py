@@ -52,6 +52,8 @@ def run(cfg: DictConfig):
         hparams = {}
     logger.info(f"Final train config: {train_cfg}")
 
+    run_logger = train_cfg.get_logger()
+
     model = train_cfg.get_model()
     train_dataset = train_cfg.get_dataset(mode="train")
     train_dataloader = train_cfg.get_dataloader(train_dataset, mode="train")
@@ -63,7 +65,10 @@ def run(cfg: DictConfig):
     test_dataloader = train_cfg.get_dataloader(test_dataset, mode="test")
 
     dataset = TrackingDataset(
-        train_dl=train_dataloader, val_dl=val_dataloader, test_dl=test_dataloader
+        train_dl=train_dataloader,
+        val_dl=val_dataloader,
+        test_dl=test_dataloader,
+        splits=train_cfg.cfg.dataset.get("splits", None),
     )
 
     if cfg.view_batch.enable:
@@ -74,8 +79,6 @@ def run(cfg: DictConfig):
             return
 
     model = train_cfg.get_gtr_runner()  # TODO see if we can use torch.compile()
-
-    run_logger = train_cfg.get_logger()
 
     callbacks = []
     _ = callbacks.extend(train_cfg.get_checkpointing())
