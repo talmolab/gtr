@@ -21,7 +21,6 @@ class Tracker:
     def __init__(
         self,
         window_size: int = 8,
-        use_vis_feats: bool = True,
         overlap_thresh: float = 0.01,
         mult_thresh: bool = True,
         decay_time: float | None = None,
@@ -36,7 +35,6 @@ class Tracker:
 
         Args:
             window_size: the size of the window used during sliding inference.
-            use_vis_feats: Whether or not to use visual feature extractor.
             overlap_thresh: the trajectory overlap threshold to be used for assignment.
             mult_thresh: Whether or not to use weight threshold.
             decay_time: weight for `decay_time` postprocessing.
@@ -52,7 +50,6 @@ class Tracker:
         self.track_queue = TrackQueue(
             window_size=window_size, max_gap=max_gap, verbose=verbose
         )
-        self.use_vis_feats = use_vis_feats
         self.overlap_thresh = overlap_thresh
         self.mult_thresh = mult_thresh
         self.decay_time = decay_time
@@ -112,17 +109,7 @@ class Tracker:
 
         for frame in frames:
             if frame.has_instances():
-                if not self.use_vis_feats:
-                    for instance in frame.instances:
-                        instance.features = torch.zeros(1, model.d_model)
-                    # frame["features"] = torch.randn(
-                    #     num_frame_instances, self.model.d_model
-                    # )
-
-                # comment out to turn encoder off
-
-                # Assuming the encoder is already trained or train encoder jointly.
-                elif not frame.has_features():
+                if not frame.has_features():
                     with torch.no_grad():
                         crops = frame.get_crops()
                         z = model.visual_encoder(crops)
@@ -130,18 +117,10 @@ class Tracker:
                         for i, z_i in enumerate(z):
                             frame.instances[i].features = z_i
 
-        # I feel like this chunk is unnecessary:
-        # reid_features = torch.cat(
-        #     [frame["features"] for frame in instances], dim=0
-        # ).unsqueeze(0)
-
-        # asso_preds, pred_boxes, pred_time, embeddings = self.model(
-        #     instances, reid_features
-        # )
         instances_pred = self.sliding_inference(model, frames)
 
         if not self.persistent_tracking:
-            logger.debug(f"Clearing Queue after tracking")
+            logger.debug(f"Clearing queue after tracking single batch")
             self.track_queue.end_tracks()
 
         return instances_pred

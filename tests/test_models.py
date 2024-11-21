@@ -51,6 +51,14 @@ def test_encoder_timm():
     backend = "timm"
 
     encoder = VisualEncoder(
+        model_name="off", in_chans=c, d_model=features, backend=backend
+    )
+    output = encoder(input_tensor)
+
+    assert output.shape == (b, features)
+    assert not output.any()
+
+    encoder = VisualEncoder(
         model_name="resnet18", in_chans=c, d_model=features, backend=backend
     )
 
@@ -92,6 +100,14 @@ def test_encoder_torch():
     features = 512
     input_tensor = torch.rand(b, c, h, w)
     backend = "torch"
+
+    encoder = VisualEncoder(
+        model_name="off", in_chans=c, d_model=features, backend=backend
+    )
+    output = encoder(input_tensor)
+
+    assert output.shape == (b, features)
+    assert not output.any()
 
     encoder = VisualEncoder(
         model_name="resnet18", in_chans=c, d_model=features, backend=backend

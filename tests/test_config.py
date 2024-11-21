@@ -71,7 +71,6 @@ def test_getters(base_config, sleap_data_dir):
     assert set(
         [
             "window_size",
-            "use_vis_feats",
             "overlap_thresh",
             "mult_thresh",
             "decay_time",

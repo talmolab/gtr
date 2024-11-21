@@ -52,9 +52,12 @@ class VisualEncoder(torch.nn.Module):
             **kwargs,
         )
 
-        self.out_layer = torch.nn.Linear(
-            self.encoder_dim(self.feature_extractor), self.d_model
-        )
+        if self.model_name in ["off", "", None]:
+            self.out_layer = torch.nn.Identity()
+        else:
+            self.out_layer = torch.nn.Linear(
+                self.encoder_dim(self.feature_extractor), self.d_model
+            )
 
     def select_feature_extractor(
         self, model_name: str, in_chans: int, backend: str, **kwargs: Any
@@ -70,45 +73,52 @@ class VisualEncoder(torch.nn.Module):
         Returns:
             a CNN encoder based on the config and backend selected.
         """
-        if "timm" in backend.lower():
-            feature_extractor = timm.create_model(
-                model_name=self.model_name,
-                in_chans=self.in_chans,
-                num_classes=0,
-                **kwargs,
-            )
-        elif "torch" in backend.lower():
-            if model_name.lower() == "resnet18":
-                feature_extractor = torchvision.models.resnet18(**kwargs)
+        if model_name in ["", "off", None]:
+            feature_extractor = lambda tensor: torch.zeros(
+                (tensor.shape[0], self.d_model),
+                dtype=tensor.dtype,
+                device=tensor.device,
+            )  # turn off visual features by returning zeros
+        else:
+            if "timm" in backend.lower():
+                feature_extractor = timm.create_model(
+                    model_name=self.model_name,
+                    in_chans=self.in_chans,
+                    num_classes=0,
+                    **kwargs,
+                )
+            elif "torch" in backend.lower():
+                if model_name.lower() == "resnet18":
+                    feature_extractor = torchvision.models.resnet18(**kwargs)
 
-            elif model_name.lower() == "resnet50":
-                feature_extractor = torchvision.models.resnet50(**kwargs)
+                elif model_name.lower() == "resnet50":
+                    feature_extractor = torchvision.models.resnet50(**kwargs)
+
+                else:
+                    raise ValueError(
+                        f"Only `[resnet18, resnet50]` are available when backend is {backend}. Found {model_name}"
+                    )
+                feature_extractor = torch.nn.Sequential(
+                    *list(feature_extractor.children())[:-1]
+                )
+                input_layer = feature_extractor[0]
+                if in_chans != 3:
+                    feature_extractor[0] = torch.nn.Conv2d(
+                        in_channels=in_chans,
+                        out_channels=input_layer.out_channels,
+                        kernel_size=input_layer.kernel_size,
+                        stride=input_layer.stride,
+                        padding=input_layer.padding,
+                        dilation=input_layer.dilation,
+                        groups=input_layer.groups,
+                        bias=input_layer.bias,
+                        padding_mode=input_layer.padding_mode,
+                    )
 
             else:
                 raise ValueError(
-                    f"Only `[resnet18, resnet50]` are available when backend is {backend}. Found {model_name}"
+                    f"Only ['timm', 'torch'] backends are available! Found {backend}."
                 )
-            feature_extractor = torch.nn.Sequential(
-                *list(feature_extractor.children())[:-1]
-            )
-            input_layer = feature_extractor[0]
-            if in_chans != 3:
-                feature_extractor[0] = torch.nn.Conv2d(
-                    in_channels=in_chans,
-                    out_channels=input_layer.out_channels,
-                    kernel_size=input_layer.kernel_size,
-                    stride=input_layer.stride,
-                    padding=input_layer.padding,
-                    dilation=input_layer.dilation,
-                    groups=input_layer.groups,
-                    bias=input_layer.bias,
-                    padding_mode=input_layer.padding_mode,
-                )
-
-        else:
-            raise ValueError(
-                f"Only ['timm', 'torch'] backends are available! Found {backend}."
-            )
         return feature_extractor
 
     def encoder_dim(self, model: torch.nn.Module) -> int:

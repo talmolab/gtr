@@ -47,7 +47,6 @@ scheduler:
 
 tracker:
   window_size: 8
-  use_vis_feats: true
   overlap_thresh: 0.01
   mult_thresh: true
   decay_time: null
