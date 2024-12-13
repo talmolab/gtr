@@ -138,8 +138,10 @@ class Tracker:
         # asso_preds, pred_boxes, pred_time, embeddings = self.model(
         #     instances, reid_features
         # )
+        # get reference and query instances from TrackQueue and calls _run_global_tracker()
         instances_pred = self.sliding_inference(model, frames)
 
+        # e.g. during train/val, don't track across batches so persistent_tracking is switched off
         if not self.persistent_tracking:
             logger.debug(f"Clearing Queue after tracking")
             self.track_queue.end_tracks()
@@ -164,7 +166,9 @@ class Tracker:
         # H: height.
         # W: width.
 
+        # frames is untracked clip for inference
         for batch_idx, frame_to_track in enumerate(frames):
+            # tracked_frames is a list of reference frames that have been tracked (associated)
             tracked_frames = self.track_queue.collate_tracks(
                 device=frame_to_track.frame_id.device
             )
@@ -188,10 +192,11 @@ class Tracker:
                     )
 
                     curr_track_id = 0
+                    # if track ids exist from another tracking program i.e. sleap, init with those
                     for i, instance in enumerate(frames[batch_idx].instances):
                         instance.pred_track_id = instance.gt_track_id
                         curr_track_id = max(curr_track_id, instance.pred_track_id)
-
+                    # if no track ids, then assign new ones
                     for i, instance in enumerate(frames[batch_idx].instances):
                         if instance.pred_track_id == -1:
                             curr_track_id += 1
@@ -201,6 +206,7 @@ class Tracker:
                 if (
                     frame_to_track.has_instances()
                 ):  # Check if there are detections. If there are skip and increment gap count
+                    # combine the tracked frames with the latest frame; inference pipeline uses latest frame as pred
                     frames_to_track = tracked_frames + [
                         frame_to_track
                     ]  # better var name?
@@ -217,7 +223,7 @@ class Tracker:
                 self.track_queue.add_frame(frame_to_track)
             else:
                 self.track_queue.increment_gaps([])
-
+            # update the frame object from the input inference untracked clip
             frames[batch_idx] = frame_to_track
         return frames
 
@@ -252,7 +258,7 @@ class Tracker:
         # E.g.: instances_per_frame: [4, 5, 6, 7]; window of length 4 with 4 detected instances in the first frame of the window.
 
         _ = model.eval()
-
+        # get the last frame in the clip to perform inference on
         query_frame = frames[query_ind]
 
         query_instances = query_frame.instances
@@ -279,8 +285,10 @@ class Tracker:
 
         # (L=1, n_query, total_instances)
         with torch.no_grad():
+            # GTR knows this is for inference since query_instances is not None
             asso_matrix = model(all_instances, query_instances)
 
+        # GTR output is n_query x n_instances - split this into per-frame to softmax each frame separately
         asso_output = asso_matrix[-1].matrix.split(
             instances_per_frame, dim=1
         )  # (window_size, n_query, N_i)
@@ -296,7 +304,7 @@ class Tracker:
 
         asso_output_df.index.name = "Instances"
         asso_output_df.columns.name = "Instances"
-
+        # save the association matrix to the Frame object
         query_frame.add_traj_score("asso_output", asso_output_df)
         query_frame.asso_output = asso_matrix[-1]
 
@@ -343,6 +351,8 @@ class Tracker:
 
         query_frame.add_traj_score("asso_nonquery", asso_nonquery_df)
 
+        # need frame height and width to scale boxes during post-processing
+        _, h, w = query_frame.img_shape.flatten() 
         pred_boxes = model_utils.get_boxes(all_instances)
         query_boxes = pred_boxes[query_inds]  # n_k x 4
         nonquery_boxes = pred_boxes[nonquery_inds]  # n_nonquery x 4
@@ -374,7 +384,7 @@ class Tracker:
 
             query_frame.add_traj_score("decay_time", decay_time_traj_score)
         ################################################################################
-
+        # reduce association matrix - aggregating reference instance association scores by tracks
         # (n_query x n_nonquery) x (n_nonquery x n_traj) --> n_query x n_traj
         traj_score = torch.mm(traj_score, id_inds.cpu())  # (n_query, n_traj)
 
@@ -387,6 +397,7 @@ class Tracker:
 
         query_frame.add_traj_score("traj_score", traj_score_df)
         ################################################################################
+        # IOU-based post-processing; add a weighted IOU across successive frames to association scores
 
         # with iou -> combining with location in tracker, they set to True
         # todo -> should also work without pos_embed
@@ -421,11 +432,12 @@ class Tracker:
 
             query_frame.add_traj_score("weight_iou", iou_traj_score)
         ################################################################################
+        # filters association matrix such that instances too far from each other get scores=0
 
         # threshold for continuing a tracking or starting a new track -> they use 1.0
         # todo -> should also work without pos_embed
         traj_score = post_processing.filter_max_center_dist(
-            traj_score, self.max_center_dist, query_boxes, nonquery_boxes, id_inds
+            traj_score, self.max_center_dist, query_boxes, nonquery_boxes, id_inds, h, w
         )
 
         if self.max_center_dist is not None and self.max_center_dist > 0:
@@ -439,6 +451,7 @@ class Tracker:
             query_frame.add_traj_score("max_center_dist", max_center_dist_traj_score)
 
         ################################################################################
+        # softmax along tracks for each instance, for interpretability
         scaled_traj_score = torch.softmax(traj_score, dim=1)
         scaled_traj_score_df = pd.DataFrame(
             scaled_traj_score.numpy(), columns=unique_ids.cpu().numpy()
@@ -449,6 +462,7 @@ class Tracker:
         query_frame.add_traj_score("scaled", scaled_traj_score_df)
         ################################################################################
 
+        # hungarian matching
         match_i, match_j = linear_sum_assignment((-traj_score))
 
         track_ids = instance_ids.new_full((n_query,), -1)
@@ -462,6 +476,7 @@ class Tracker:
             thresh = (
                 overlap_thresh * id_inds[:, j].sum() if mult_thresh else overlap_thresh
             )
+            # if the association score for a query instance is lower than the threshold, create a new track for it
             if n_traj >= self.max_tracks or traj_score[i, j] > thresh:
                 logger.debug(
                     f"Assigning instance {i} to track {j} with id {unique_ids[j]}"

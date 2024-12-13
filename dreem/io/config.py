@@ -226,7 +226,7 @@ class Config:
         mode: str,
         label_files: list[str] | None = None,
         vid_files: list[str | list[str]] = None,
-    ) -> "SleapDataset" | "MicroscopyDataset" | "CellTrackingDataset":
+    ) -> "SleapDataset" | "MicroscopyDataset" | "CellTrackingDataset" | None:
         """Getter for datasets.
 
         Args:
@@ -301,6 +301,10 @@ class Config:
                 "Could not resolve dataset type from Config! Please include \
                 either `slp_files` or `tracks`/`source`"
             )
+        if len(dataset) == 0:
+            logger.warn(f"Length of {mode} dataset is {len(dataset)}! Returning None")
+            return None
+        return dataset
 
     @property
     def data_paths(self):
@@ -319,9 +323,9 @@ class Config:
 
     def get_dataloader(
         self,
-        dataset: "SleapDataset" | "MicroscopyDataset" | "CellTrackingDataset",
+        dataset: "SleapDataset" | "MicroscopyDataset" | "CellTrackingDataset" | None,
         mode: str,
-    ) -> torch.utils.data.DataLoader:
+    ) -> torch.utils.data.DataLoader | None:
         """Getter for dataloader.
 
         Args:
@@ -350,13 +354,20 @@ class Config:
         else:
             pin_memory = False
 
-        return torch.utils.data.DataLoader(
+        dataloader = torch.utils.data.DataLoader(
             dataset=dataset,
             batch_size=1,
             pin_memory=pin_memory,
             collate_fn=dataset.no_batching_fn,
             **dataloader_params,
         )
+
+        if len(dataloader) == 0:
+            logger.warn(
+                f"Length of {mode} dataloader is {len(dataloader)}! Returning `None`"
+            )
+            return None
+        return dataloader
 
     def get_optimizer(self, params: Iterable) -> torch.optim.Optimizer:
         """Getter for optimizer.
@@ -492,7 +503,7 @@ class Config:
                 filename=f"{{epoch}}-{{{metric}}}",
                 **checkpoint_params,
             )
-            checkpointer.CHECKPOINT_NAME_LAST = f"{{epoch}}-best-{{{metric}}}"
+            checkpointer.CHECKPOINT_NAME_LAST = f"{{epoch}}-final-{{{metric}}}"
             checkpointers.append(checkpointer)
         return checkpointers
 

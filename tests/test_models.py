@@ -14,6 +14,8 @@ from dreem.models import (
 from dreem.models.transformer import (
     TransformerEncoderLayer,
     TransformerDecoderLayer,
+    spatial_emb_from_bb,
+    apply_embeddings,
 )
 
 
@@ -33,7 +35,9 @@ def test_att_weight_head():
     """Test self-attention head logic."""
     b, n, f = 1, 10, 1024  # batch size, num instances, features
 
-    att_weight_head = ATTWeightHead(feature_dim=f, num_layers=2, dropout=0.1)
+    att_weight_head = ATTWeightHead(
+        feature_dim=f, num_layers=2, dropout=0.1, embedding_agg_method="average"
+    )
 
     q = k = torch.rand(size=(b, n, f))
 
@@ -161,10 +165,87 @@ def test_embedding_validity():
     with pytest.raises(Exception):
         _ = Embedding(emb_type="temporal", mode="learn", features=128)
 
+    with pytest.raises(Exception):
+        # embedding_agg_method cannot be average for rope
+        _ = Embedding(
+            emb_type="pos", mode="rope", features=128, embedding_agg_method="average"
+        )
+        _ = Embedding(
+            emb_type="pos", mode="rope", features=128, embedding_agg_method="stacked"
+        )
+
+    _ = Embedding(
+        emb_type="pos", mode="rope", features=128, embedding_agg_method="stack"
+    )
+    _ = Embedding(
+        emb_type="pos", mode="rope", features=128, embedding_agg_method="concatenate"
+    )
+
+    _ = Embedding(
+        emb_type="pos", mode="fixed", features=128, embedding_agg_method="average"
+    )
+    _ = Embedding(
+        emb_type="pos", mode="fixed", features=128, embedding_agg_method="stack"
+    )
+    _ = Embedding(
+        emb_type="pos", mode="fixed", features=128, embedding_agg_method="concatenate"
+    )
+
+    _ = Embedding(
+        emb_type="pos", mode="learned", features=128, embedding_agg_method="average"
+    )
+    _ = Embedding(
+        emb_type="pos", mode="learned", features=128, embedding_agg_method="stack"
+    )
+    _ = Embedding(
+        emb_type="pos", mode="learned", features=128, embedding_agg_method="concatenate"
+    )
+
     _ = Embedding(emb_type="temp", mode="learned", features=128)
     _ = Embedding(emb_type="pos", mode="learned", features=128)
 
-    _ = Embedding(emb_type="pos", mode="learned", features=128)
+
+def test_rope_embedding():
+    "Test RoPE embedding"
+    frames = 32
+    objects = 10
+    d_model = 256
+    n_anchors = 1
+
+    N = frames * objects
+
+    boxes = torch.rand(size=(N, n_anchors, 4))
+    times = torch.rand(size=(N,))
+    # input data of shape (batch_size, N, num_heads, embed_dim)
+    x = torch.rand(size=(1, N, d_model))
+
+    pos_emb = Embedding(
+        emb_type="pos", mode="rope", features=d_model, embedding_agg_method="stack"
+    )
+    temp_emb = Embedding(
+        emb_type="temp", mode="rope", features=d_model, embedding_agg_method="stack"
+    )
+
+    ref_x, ref_y = spatial_emb_from_bb(boxes)
+    x_rope, rot_mat_x = pos_emb(x, ref_x)
+    y_rope, rot_mat_y = pos_emb(x, ref_y)
+    t_rope, ref_temp_emb = temp_emb(x, times)
+
+    assert x_rope.size() == (1, N, d_model)
+    assert y_rope.size() == (1, N, d_model)
+    assert t_rope.size() == (1, N, d_model)
+
+    assert not torch.equal(x, x_rope)
+    assert not torch.equal(x, y_rope)
+    assert not torch.equal(x, t_rope)
+
+    assert not torch.equal(x_rope, y_rope)
+    assert not torch.equal(x_rope, t_rope)
+    assert not torch.equal(y_rope, t_rope)
+
+    assert ref_x.size() == ref_y.size()
+    assert x_rope.size() == x.size()
+    assert y_rope.size() == x.size()
 
 
 def test_embedding_basic():
@@ -179,6 +260,8 @@ def test_embedding_basic():
 
     boxes = torch.rand(size=(N, n_anchors, 4))
     times = torch.rand(size=(N,))
+    # input data of shape (batch_size, N, embed_dim)
+    x = torch.rand(size=(1, N, d_model))
 
     pos_emb = Embedding(
         emb_type="pos",
@@ -189,31 +272,31 @@ def test_embedding_basic():
         scale=10,
     )
 
-    sine_pos_emb = pos_emb(boxes)
+    _, sine_pos_emb = pos_emb(x, boxes)
 
     pos_emb = Embedding(emb_type="pos", mode="learned", features=d_model, emb_num=100)
-    learned_pos_emb = pos_emb(boxes)
+    _, learned_pos_emb = pos_emb(x, boxes)
 
     temp_emb = Embedding(emb_type="temp", mode="learned", features=d_model, emb_num=16)
-    learned_temp_emb = temp_emb(times)
+    _, learned_temp_emb = temp_emb(x, times)
 
     pos_emb_off = Embedding(emb_type="pos", mode="off", features=d_model)
-    off_pos_emb = pos_emb_off(boxes)
+    _, off_pos_emb = pos_emb_off(x, boxes)
 
     temp_emb_off = Embedding(emb_type="temp", mode="off", features=d_model)
-    off_temp_emb = temp_emb_off(times)
+    _, off_temp_emb = temp_emb_off(x, times)
 
     learned_emb_off = Embedding(emb_type="off", mode="learned", features=d_model)
-    off_learned_emb_boxes = learned_emb_off(boxes)
-    off_learned_emb_times = learned_emb_off(times)
+    _, off_learned_emb_boxes = learned_emb_off(x, boxes)
+    _, off_learned_emb_times = learned_emb_off(x, times)
 
     fixed_emb_off = Embedding(emb_type="off", mode="fixed", features=d_model)
-    off_fixed_emb_boxes = fixed_emb_off(boxes)
-    off_fixed_emb_times = fixed_emb_off(times)
+    _, off_fixed_emb_boxes = fixed_emb_off(x, boxes)
+    _, off_fixed_emb_times = fixed_emb_off(x, times)
 
     off_emb = Embedding(emb_type="off", mode="off", features=d_model)
-    off_emb_boxes = off_emb(boxes)
-    off_emb_times = off_emb(times)
+    _, off_emb_boxes = off_emb(x, boxes)
+    _, off_emb_times = off_emb(x, times)
 
     assert sine_pos_emb.size() == (N, d_model)
     assert learned_pos_emb.size() == (N, d_model)
@@ -247,12 +330,14 @@ def test_embedding_kwargs():
 
     frames = 32
     objects = 10
+    d_model = 128
 
     N = frames * objects
     n_anchors = 1
 
     boxes = torch.rand(N, n_anchors, 4)
-
+    # input data of shape (batch_size, N, embed_dim)
+    x = torch.rand(size=(1, N, d_model))
     # sine embedding
 
     sine_args = {
@@ -260,32 +345,32 @@ def test_embedding_kwargs():
         "scale": frames,
         "normalize": True,
     }
-    sine_no_args = Embedding("pos", "fixed", 128)
-    sine_with_args = Embedding("pos", "fixed", 128, **sine_args)
+    sine_no_args = Embedding("pos", "fixed", d_model)
+    sine_with_args = Embedding("pos", "fixed", d_model, **sine_args)
 
     assert sine_no_args.temperature != sine_with_args.temperature
 
-    sine_no_args = sine_no_args(boxes)
-    sine_with_args = sine_with_args(boxes)
+    _, sine_no_args = sine_no_args(x, boxes)
+    _, sine_with_args = sine_with_args(x, boxes)
 
     assert not torch.equal(sine_no_args, sine_with_args)
 
     # learned pos embedding
 
-    lp_no_args = Embedding("pos", "learned", 128)
+    lp_no_args = Embedding("pos", "learned", d_model)
 
     lp_args = {"emb_num": 100, "over_boxes": False}
 
-    lp_with_args = Embedding("pos", "learned", 128, **lp_args)
+    lp_with_args = Embedding("pos", "learned", d_model, **lp_args)
     assert lp_no_args.lookup.weight.shape != lp_with_args.lookup.weight.shape
 
     # learned temp embedding
 
-    lt_no_args = Embedding("temp", "learned", 128)
+    lt_no_args = Embedding("temp", "learned", d_model)
 
     lt_args = {"emb_num": 100}
 
-    lt_with_args = Embedding("temp", "learned", 128, **lt_args)
+    lt_with_args = Embedding("temp", "learned", d_model, **lt_args)
     assert lt_no_args.lookup.weight.shape != lt_with_args.lookup.weight.shape
 
 
@@ -299,6 +384,8 @@ def test_multianchor_embedding():
     N = frames * objects
 
     boxes = torch.rand(size=(N, n_anchors, 4))
+    # input data of shape (batch_size, N, embed_dim)
+    x = torch.rand(size=(1, N, d_model))
 
     fixed_emb = Embedding(
         "pos",
@@ -317,18 +404,18 @@ def test_multianchor_embedding():
     assert not isinstance(fixed_emb.mlp, torch.nn.Identity)
     assert not isinstance(learned_emb.mlp, torch.nn.Identity)
 
-    emb = fixed_emb(boxes)
+    _, emb = fixed_emb(x, boxes)
     assert emb.size() == (N, features)
 
-    emb = learned_emb(boxes)
+    _, emb = learned_emb(x, boxes)
     assert emb.size() == (N, features)
 
     fixed_emb = Embedding("pos", "fixed", features=features)
     learned_emb = Embedding("pos", "learned", features=features)
     with pytest.raises(RuntimeError):
-        _ = fixed_emb(boxes)
+        _, _ = fixed_emb(x, boxes)
     with pytest.raises(RuntimeError):
-        _ = learned_emb(boxes)
+        _, _ = learned_emb(x, boxes)
 
 
 def test_transformer_encoder():
@@ -351,7 +438,7 @@ def test_transformer_encoder():
     # with position
     pos_emb = torch.ones_like(queries)
 
-    encoder_features = transformer_encoder(queries, pos_emb=pos_emb)
+    encoder_features = transformer_encoder(queries)
 
     assert encoder_features.size() == encoder_features.size()
 
@@ -381,12 +468,7 @@ def test_transformer_decoder():
     # with position
     pos_emb = query_pos_emb = torch.ones_like(encoder_features)
 
-    decoder_features = transformer_decoder(
-        decoder_queries,
-        encoder_features,
-        ref_pos_emb=pos_emb,
-        query_pos_emb=query_pos_emb,
-    )
+    decoder_features = transformer_decoder(decoder_queries, encoder_features)
 
     assert decoder_features.size() == decoder_queries.size()
 
@@ -397,8 +479,13 @@ def test_transformer_basic():
     num_frames = 32
     num_detected = 10
     img_shape = (1, 100, 100)
-
-    transformer = Transformer(d_model=feats, num_encoder_layers=1, num_decoder_layers=1)
+    embedding_meta = {"embedding_agg_method": "stack"}
+    transformer = Transformer(
+        d_model=feats,
+        num_encoder_layers=1,
+        num_decoder_layers=1,
+        embedding_meta=embedding_meta,
+    )
 
     frames = []
 
@@ -444,6 +531,7 @@ def test_transformer_embedding():
     embedding_meta = {
         "pos": {"mode": "learned", "emb_num": 16, "normalize": True},
         "temp": {"mode": "learned", "emb_num": 16, "normalize": True},
+        "embedding_agg_method": "average",
     }
 
     transformer = Transformer(

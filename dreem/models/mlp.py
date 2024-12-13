@@ -34,6 +34,7 @@ class MLP(torch.nn.Module):
             self.layers = torch.nn.ModuleList(
                 [
                     torch.nn.Linear(n, k)
+                    # list concatenations to ensure layer shape compability
                     for n, k in zip([input_dim] + h, h + [output_dim])
                 ]
             )
@@ -54,6 +55,7 @@ class MLP(torch.nn.Module):
             Output tensor of shape (batch_size, num_instances, output_dim).
         """
         for i, layer in enumerate(self.layers):
+            layer.to(x.device)
             x = F.relu(layer(x)) if i < self.num_layers - 1 else layer(x)
             if i < self.num_layers - 1 and self.dropout > 0.0:
                 x = self.dropouts[i](x)

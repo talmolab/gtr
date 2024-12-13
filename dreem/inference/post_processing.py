@@ -126,6 +126,8 @@ def filter_max_center_dist(
     k_boxes: torch.Tensor | None = None,
     nonk_boxes: torch.Tensor | None = None,
     id_inds: torch.Tensor | None = None,
+    h: int = None,
+    w: int = None
 ) -> torch.Tensor:
     """Filter trajectory score by distances between objects across frames.
 
@@ -135,6 +137,8 @@ def filter_max_center_dist(
         k_boxes: The bounding boxes in the current frame
         nonk_boxes: the boxes not in the current frame
         id_inds: track ids
+        h: height of image
+        w: width of image
 
     Returns:
         An N_t x N association matrix
@@ -147,13 +151,15 @@ def filter_max_center_dist(
         k_s = ((k_boxes[:, :, 2:] - k_boxes[:, :, :2]) ** 2).sum(dim=2)  # n_k
 
         nonk_ct = (nonk_boxes[:, :, :2] + nonk_boxes[:, :, 2:]) / 2
-
+        # TODO: nonk_boxes should be only from previous frame rather than entire window    
         dist = ((k_ct[:, None, :, :] - nonk_ct[None, :, :, :]) ** 2).sum(
             dim=-1
         )  # n_k x Np
-
-        norm_dist = dist / (k_s[:, None, :] + 1e-8)
+        # TODO: note that dist is in units of fraction of the height and width of the image; 
+        # TODO: need to scale it by the original image size so that its in units of pixels
+        # norm_dist = dist / (k_s[:, None, :] + 1e-8)
         norm_dist = dist.mean(axis=-1)  # n_k x Np
+        # norm_dist = 
 
         valid = norm_dist < max_center_dist  # n_k x Np
         valid_assn = (

@@ -142,3 +142,8 @@ dreem/training/models/*
 
 # docs
 site/
+*.xml
+dreem/training/configs/base.yaml
+dreem/training/configs/override.yaml
+dreem/training/configs/override.yaml
+dreem/training/configs/base.yaml

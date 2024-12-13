@@ -215,6 +215,8 @@ def test_post_processing():  # set_default_device
             k_boxes=k_boxes,
             nonk_boxes=nonk_boxes,
             id_inds=id_inds,
+            h=im_size,
+            w=im_size
         )
     ).all()
 
@@ -226,6 +228,8 @@ def test_post_processing():  # set_default_device
             k_boxes=k_boxes,
             nonk_boxes=nonk_boxes,
             id_inds=id_inds,
+            h=im_size,
+            w=im_size
         )
     ).all()
 

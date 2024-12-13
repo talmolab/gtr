@@ -1,4 +1,0 @@
-model.d_model,model.dim_feedforward,model.feature_dim_attn_head,model.num_encoder_layers,model.num_decoder_layers
-256,256,256,1,1
-512,512,512,2,2
-1024,1024,1024,4,4

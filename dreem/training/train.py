@@ -54,6 +54,7 @@ def run(cfg: DictConfig):
     logger.info(f"Final train config: {train_cfg}")
 
     model = train_cfg.get_model()
+
     train_dataset = train_cfg.get_dataset(mode="train")
     train_dataloader = train_cfg.get_dataloader(train_dataset, mode="train")
 
@@ -96,6 +97,7 @@ def run(cfg: DictConfig):
         callbacks.append(early_stopping)
 
     accelerator = "gpu" if torch.cuda.is_available() else "cpu"
+
     devices = torch.cuda.device_count() if torch.cuda.is_available() else cpu_count()
 
     trainer = train_cfg.get_trainer(

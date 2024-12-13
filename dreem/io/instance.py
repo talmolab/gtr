@@ -565,7 +565,11 @@ class Instance:
             emb_type: Key/embedding type to be saved to dictionary
             embedding: The actual torch tensor embedding.
         """
-        embedding = _expand_to_rank(embedding, 2)
+        if (
+            type(embedding) != dict
+        ):  # for embedding agg method "average", input is array
+            # for method stack and concatenate, input is dict
+            embedding = _expand_to_rank(embedding, 2)
         self._embeddings[emb_type] = embedding
 
     @property

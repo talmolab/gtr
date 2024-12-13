@@ -29,10 +29,11 @@ model:
   dropout_attn_head: 0.1
   embedding_meta: 
     pos:
-        mode: "fixed"
+        mode: "fixed" # supports fixed, learned, rope
         normalize: true
     temp:
-        mode: "fixed"
+        mode: "fixed" # supports fixed, learned, rope
+    embedding_agg_method: "stack" # supports stack, average, concatenate
   return_embedding: False
   decoder_self_attn: False
 
@@ -97,6 +98,7 @@ dataset:
     crop_size: 128
     chunk: true
     clip_length: 32
+    mode: "train"
 
   val_dataset:
     slp_files: ["../../tests/data/sleap/two_flies.slp"]
@@ -105,6 +107,7 @@ dataset:
     crop_size: 128 
     chunk: True
     clip_length: 32
+    mode: "val"
 
   test_dataset:
     slp_files: ["../../tests/data/sleap/two_flies.slp"]
@@ -113,6 +116,7 @@ dataset:
     crop_size: 128 
     chunk: True
     clip_length: 32
+    mode: "test"
 
 dataloader:
   train_dataloader:
@@ -135,7 +139,7 @@ logging:
   group: "example"
   save_dir: './logs'
   project: "GTR"
-  log_model: "all"
+  log_model: null
 
 early_stopping:
   monitor: "val_loss"
@@ -152,9 +156,12 @@ checkpointing:
   save_last: true
   dirpath: null
   auto_insert_metric_name: true
-  every_n_epochs: 10
+  every_n_epochs: 1
 
 trainer:
+  # only use this for local apple silicon runs; change for cluster runs
+  # accelerator: "mps"
+  # devices: 1
   check_val_every_n_epoch: 1
   enable_checkpointing: true
   gradient_clip_val: null
@@ -162,8 +169,8 @@ trainer:
   limit_test_batches: 1.0
   limit_val_batches: 1.0
   log_every_n_steps: 1
-  max_epochs: 100
-  min_epochs: 10
+  max_epochs: 1
+  min_epochs: 1
 
 view_batch:
   enable: False
