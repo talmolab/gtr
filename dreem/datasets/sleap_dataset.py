@@ -6,7 +6,9 @@ import imageio
 import numpy as np
 import sleap_io as sio
 import random
+from pathlib import Path
 import logging
+from typing import Union, Optional
 from dreem.io import Instance, Frame
 from dreem.datasets import data_utils, BaseDataset
 from torchvision.transforms import functional as tvf
@@ -21,8 +23,9 @@ class SleapDataset(BaseDataset):
         self,
         slp_files: list[str],
         video_files: list[str],
+        data_dirs: Optional[list[str]] = None,
         padding: int = 5,
-        crop_size: int = 128,
+        crop_size: Union[int, list[int]] = 128,
         anchors: int | list[str] | str = "",
         chunk: bool = True,
         clip_length: int = 500,
@@ -32,14 +35,19 @@ class SleapDataset(BaseDataset):
         n_chunks: int | float = 1.0,
         seed: int | None = None,
         verbose: bool = False,
+        normalize_image: bool = True,
     ):
         """Initialize SleapDataset.
 
         Args:
             slp_files: a list of .slp files storing tracking annotations
             video_files: a list of paths to video files
+            data_dirs: a path, or a list of paths to data directories. If provided, crop_size should be a list of integers
+                with the same length as data_dirs.
             padding: amount of padding around object crops
-            crop_size: the size of the object crops
+            crop_size: the size of the object crops. Can be either:
+                - An integer specifying a single crop size for all objects
+                - A list of integers specifying different crop sizes for different data directories
             anchors: One of:
                         * a string indicating a single node to center crops around
                         * a list of skeleton node names to be used as the center of crops
@@ -64,6 +72,7 @@ class SleapDataset(BaseDataset):
                 Can either a fraction of the dataset (ie (0,1.0]) or number of chunks
             seed: set a seed for reproducibility
             verbose: boolean representing whether to print
+            normalize_image: whether to normalize the image to [0, 1]
         """
         super().__init__(
             slp_files,
@@ -79,6 +88,9 @@ class SleapDataset(BaseDataset):
         )
 
         self.slp_files = slp_files
+        self.data_dirs = (
+            data_dirs  # empty list, list of paths, or string of single path
+        )
         self.video_files = video_files
         self.padding = padding
         self.crop_size = crop_size
@@ -88,13 +100,32 @@ class SleapDataset(BaseDataset):
         self.handle_missing = handle_missing.lower()
         self.n_chunks = n_chunks
         self.seed = seed
-
+        self.normalize_image = normalize_image
+        if self.data_dirs is None:
+            self.data_dirs = []
         if isinstance(anchors, int):
             self.anchors = anchors
         elif isinstance(anchors, str):
             self.anchors = [anchors]
         else:
             self.anchors = anchors
+
+        if not isinstance(self.data_dirs, list):
+            self.data_dirs = [self.data_dirs]
+
+        if not isinstance(self.crop_size, list):
+            # make a list so its handled consistently if multiple crops are used
+            if len(self.data_dirs) > 0:  # for test mode, data_dirs is []
+                self.crop_size = [self.crop_size] * len(self.data_dirs)
+            else:
+                self.crop_size = [self.crop_size]
+
+        if len(self.data_dirs) > 0 and len(self.crop_size) != len(self.data_dirs):
+            raise ValueError(
+                f"If a list of crop sizes or data directories are given,"
+                f"they must have the same length but got {len(self.crop_size)} "
+                f"and {len(self.data_dirs)}"
+            )
 
         if (
             isinstance(self.anchors, list) and len(self.anchors) == 0
@@ -106,7 +137,7 @@ class SleapDataset(BaseDataset):
         # if self.seed is not None:
         #     np.random.seed(self.seed)
         self.labels = [sio.load_slp(slp_file) for slp_file in self.slp_files]
-        self.videos = [imageio.get_reader(vid_file) for vid_file in self.vid_files]
+        self.vid_readers = {}
         # do we need this? would need to update with sleap-io
 
         # for label in self.labels:
@@ -140,6 +171,17 @@ class SleapDataset(BaseDataset):
 
         video_name = self.video_files[label_idx]
 
+        # get the correct crop size based on the video
+        video_par_path = Path(video_name).parent
+        if len(self.data_dirs) > 0:
+            crop_size = self.crop_size[0]
+            for j, data_dir in enumerate(self.data_dirs):
+                if Path(data_dir) == video_par_path:
+                    crop_size = self.crop_size[j]
+                    break
+        else:
+            crop_size = self.crop_size[0]
+
         vid_reader = self.videos[label_idx]
 
         # img = vid_reader.get_data(0)
@@ -162,12 +204,12 @@ class SleapDataset(BaseDataset):
             lf = video[frame_ind]
 
             try:
-                img = vid_reader.get_data(int(lf.frame_idx))
-            except IndexError as e:
-                logger.warning(
-                    f"Could not read frame {frame_ind} from {video_name} due to {e}"
-                )
-                continue
+                img = lf.image
+            except FileNotFoundError as e:
+                if video_name not in self.vid_readers:
+                    self.vid_readers[video_name] = sio.load_video(video_name)
+                vid_reader = self.vid_readers[video_name]
+                img = vid_reader[lf.frame_idx]
 
             if len(img.shape) == 2:
                 img = img.expand_dims(-1)
@@ -179,7 +221,9 @@ class SleapDataset(BaseDataset):
                 )  # convert to grayscale to rgb
 
             if np.issubdtype(img.dtype, np.integer):  # convert int to float
-                img = img.astype(np.float32) / 255
+                img = img.astype(np.float32)
+                if self.normalize_image:
+                    img = img / 255
 
             n_instances_dropped = 0
 
@@ -316,15 +360,15 @@ class SleapDataset(BaseDataset):
 
                     else:
                         bbox = data_utils.pad_bbox(
-                            data_utils.get_bbox(centroid, self.crop_size),
+                            data_utils.get_bbox(centroid, crop_size),
                             padding=self.padding,
                         )
 
                     if bbox.isnan().all():
                         crop = torch.zeros(
                             c,
-                            self.crop_size + 2 * self.padding,
-                            self.crop_size + 2 * self.padding,
+                            crop_size + 2 * self.padding,
+                            crop_size + 2 * self.padding,
                             dtype=img.dtype,
                         )
                     else:
@@ -370,5 +414,5 @@ class SleapDataset(BaseDataset):
 
     def __del__(self):
         """Handle file closing before garbage collection."""
-        for reader in self.videos:
+        for reader in self.vid_readers:
             reader.close()

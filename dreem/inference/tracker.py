@@ -194,7 +194,7 @@ class Tracker:
 
                     for i, instance in enumerate(frames[batch_idx].instances):
                         if instance.pred_track_id == -1:
-                            curr_track += 1
+                            curr_track_id += 1
                             instance.pred_track_id = curr_track_id
 
             else:
@@ -329,6 +329,7 @@ class Tracker:
                 sum(instances_per_frame[: query_ind + 1]),
             )
         ]
+
         nonquery_inds = [i for i in range(total_instances) if i not in query_inds]
 
         # instead should we do model(nonquery_instances, query_instances)?
@@ -343,6 +344,19 @@ class Tracker:
 
         query_frame.add_traj_score("asso_nonquery", asso_nonquery_df)
 
+        # get raw bbox coords of prev frame instances from frame.instances_per_frame
+        prev_frame_ind = query_ind - 1
+        prev_frame_instances = frames[prev_frame_ind].instances
+        prev_frame_instance_ids = torch.cat(
+            [instance.pred_track_id for instance in prev_frame_instances], dim=0
+        )
+        prev_frame_boxes = torch.cat(
+            [instance.bbox for instance in prev_frame_instances], dim=0
+        )
+        curr_frame_boxes = torch.cat(
+            [instance.bbox for instance in query_frame.instances], dim=0
+        )
+
         pred_boxes = model_utils.get_boxes(all_instances)
         query_boxes = pred_boxes[query_inds]  # n_k x 4
         nonquery_boxes = pred_boxes[nonquery_inds]  # n_nonquery x 4
@@ -355,6 +369,10 @@ class Tracker:
         id_inds = (
             unique_ids[None, :] == instance_ids[:, None]
         ).float()  # (n_nonquery, n_traj)
+
+        prev_frame_id_inds = (
+            unique_ids[None, :] == prev_frame_instance_ids[:, None]
+        ).float()  # (n_prev_frame_instances, n_traj)
 
         ################################################################################
 
@@ -425,7 +443,11 @@ class Tracker:
         # threshold for continuing a tracking or starting a new track -> they use 1.0
         # todo -> should also work without pos_embed
         traj_score = post_processing.filter_max_center_dist(
-            traj_score, self.max_center_dist, query_boxes, nonquery_boxes, id_inds
+            traj_score,
+            self.max_center_dist,
+            prev_frame_id_inds,
+            curr_frame_boxes,
+            prev_frame_boxes,
         )
 
         if self.max_center_dist is not None and self.max_center_dist > 0:

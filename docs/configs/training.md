@@ -2,7 +2,7 @@
 
 Here, we describe the hyperparameters used for setting up training. Please see [here](./training.md#example-config) for an example training config.
 
-> Note: for using defaults, simply leave the field blank or don't include the key. Using `null` will initialize the value to `None` e.g
+> Note: for using defaults, simply leave the field blank or don't include the key. Using `null` will initialize the value to `None` which we use to represent turning off certain features such as logging, early stopping etc. e.g
 > ```YAML
 > model:
 >   d_model: #defaults to 1024 

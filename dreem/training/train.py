@@ -50,6 +50,7 @@ def run(cfg: DictConfig):
             logger.debug(hparams)
     else:
         hparams = {}
+    logging.getLogger().setLevel(level=cfg.get("log_level", "INFO").upper())
     logger.info(f"Final train config: {train_cfg}")
 
     model = train_cfg.get_model()
@@ -77,10 +78,22 @@ def run(cfg: DictConfig):
 
     run_logger = train_cfg.get_logger()
 
+    if run_logger is not None and isinstance(run_logger, pl.loggers.wandb.WandbLogger):
+        data_paths = train_cfg.data_paths
+        flattened_paths = [
+            [item] for sublist in data_paths.values() for item in sublist
+        ]
+        run_logger.log_text(
+            "training_files", columns=["data_paths"], data=flattened_paths
+        )
+
     callbacks = []
     _ = callbacks.extend(train_cfg.get_checkpointing())
     _ = callbacks.append(pl.callbacks.LearningRateMonitor())
-    _ = callbacks.append(train_cfg.get_early_stopping())
+
+    early_stopping = train_cfg.get_early_stopping()
+    if early_stopping is not None:
+        callbacks.append(early_stopping)
 
     accelerator = "gpu" if torch.cuda.is_available() else "cpu"
     devices = torch.cuda.device_count() if torch.cuda.is_available() else cpu_count()

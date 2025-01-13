@@ -13,7 +13,7 @@ Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved
 
 from dreem.io import AssociationMatrix
 from dreem.models.attention_head import ATTWeightHead
-from dreem.models import Embedding
+from dreem.models import Embedding, FourierPositionalEmbeddings
 from dreem.models.model_utils import get_boxes, get_times
 from torch import nn
 import copy
@@ -42,6 +42,7 @@ class Transformer(torch.nn.Module):
         embedding_meta: dict | None = None,
         return_embedding: bool = False,
         decoder_self_attn: bool = False,
+        encoder_cfg: dict | None = None,
     ) -> None:
         """Initialize Transformer.
 
@@ -59,6 +60,7 @@ class Transformer(torch.nn.Module):
             embedding_meta: Metadata for positional embeddings. See below.
             return_embedding: Whether to return the positional embeddings
             decoder_self_attn: If True, use decoder self attention.
+            encoder_cfg: Encoder configuration.
 
                 More details on `embedding_meta`:
                     By default this will be an empty dict and indicate
@@ -74,6 +76,7 @@ class Transformer(torch.nn.Module):
 
         self.embedding_meta = embedding_meta
         self.return_embedding = return_embedding
+        self.encoder_cfg = encoder_cfg
 
         self.pos_emb = Embedding(emb_type="off", mode="off", features=self.d_model)
         self.temp_emb = Embedding(emb_type="off", mode="off", features=self.d_model)
@@ -92,12 +95,24 @@ class Transformer(torch.nn.Module):
                         emb_type="temp", features=self.d_model, **temp_emb_cfg
                     )
 
+        self.fourier_embeddings = FourierPositionalEmbeddings(
+            n_components=8, d_model=d_model
+        )
+
         # Transformer Encoder
         encoder_layer = TransformerEncoderLayer(
             d_model, nhead, dim_feedforward, dropout, activation, norm
         )
 
         encoder_norm = nn.LayerNorm(d_model) if (norm) else None
+
+        # only used if using descriptor visual encoder; default resnet encoder uses d_model directly
+        if self.encoder_cfg and "encoder_type" in self.encoder_cfg:
+            self.visual_feat_dim = (
+                self.encoder_cfg["ndim"] if "ndim" in self.encoder_cfg else 5
+            )  # 5 is default for descriptor
+            self.fourier_proj = nn.Linear(self.d_model + self.visual_feat_dim, d_model)
+            self.fourier_norm = nn.LayerNorm(self.d_model)
 
         self.encoder = TransformerEncoder(
             encoder_layer, num_encoder_layers, encoder_norm
@@ -163,7 +178,7 @@ class Transformer(torch.nn.Module):
         # window_length = len(frames)
         # instances_per_frame = [frame.num_detected for frame in frames]
         total_instances = len(ref_instances)
-        embed_dim = ref_features.shape[-1]
+        embed_dim = self.d_model
         # print(f'T: {window_length}; N: {total_instances}; N_t: {instances_per_frame} n_reid: {reid_features.shape}')
         ref_boxes = get_boxes(ref_instances)  # total_instances, 4
         ref_boxes = torch.nan_to_num(ref_boxes, -1.0)
@@ -186,13 +201,32 @@ class Transformer(torch.nn.Module):
 
         ref_emb = ref_emb.permute(1, 0, 2)  # (total_instances, batch_size, embed_dim)
 
-        batch_size, total_instances, embed_dim = ref_features.shape
+        batch_size, total_instances = ref_features.shape[:-1]
 
         ref_features = ref_features.permute(
             1, 0, 2
         )  # (total_instances, batch_size, embed_dim)
 
         encoder_queries = ref_features
+
+        # apply fourier embeddings if using fourier rope, OR if using descriptor (compact) visual encoder
+        if (
+            self.embedding_meta
+            and "use_fourier" in self.embedding_meta
+            and self.embedding_meta["use_fourier"]
+        ) or (
+            self.encoder_cfg
+            and "encoder_type" in self.encoder_cfg
+            and self.encoder_cfg["encoder_type"] == "descriptor"
+        ):
+            encoder_queries = apply_fourier_embeddings(
+                encoder_queries,
+                ref_times,
+                self.d_model,
+                self.fourier_embeddings,
+                self.fourier_proj,
+                self.fourier_norm,
+            )
 
         encoder_features = self.encoder(
             encoder_queries, pos_emb=ref_emb
@@ -228,11 +262,31 @@ class Transformer(torch.nn.Module):
 
         else:
             query_instances = ref_instances
+            query_times = ref_times
 
         if self.return_embedding:
             for i, instance in enumerate(query_instances):
                 instance.add_embedding("pos", query_pos_emb[i])
                 instance.add_embedding("temp", query_temp_emb[i])
+
+        # apply fourier embeddings if using fourier rope, OR if using descriptor (compact) visual encoder
+        if (
+            self.embedding_meta
+            and "use_fourier" in self.embedding_meta
+            and self.embedding_meta["use_fourier"]
+        ) or (
+            self.encoder_cfg
+            and "encoder_type" in self.encoder_cfg
+            and self.encoder_cfg["encoder_type"] == "descriptor"
+        ):
+            query_features = apply_fourier_embeddings(
+                query_features,
+                query_times,
+                self.d_model,
+                self.fourier_embeddings,
+                self.fourier_proj,
+                self.fourier_norm,
+            )
 
         decoder_features = self.decoder(
             query_features,
@@ -259,6 +313,36 @@ class Transformer(torch.nn.Module):
 
         # (L=1, n_query, total_instances)
         return asso_output
+
+
+def apply_fourier_embeddings(
+    queries: torch.Tensor,
+    times: torch.Tensor,
+    d_model: int,
+    fourier_embeddings: FourierPositionalEmbeddings,
+    proj: nn.Linear,
+    norm: nn.LayerNorm,
+) -> torch.Tensor:
+    """Apply fourier embeddings to queries.
+
+    Args:
+        queries: The input tensor of shape (n_query, batch_size, embed_dim).
+        times: The times index tensor of shape (n_query,).
+        d_model: Model dimension.
+        fourier_embeddings: The Fourier positional embeddings object.
+        proj: Linear projection layer that projects concantenated feature vector to model dimension.
+        norm: The normalization layer.
+
+    Returns:
+        The output queries of shape (n_query, batch_size, embed_dim).
+    """
+    embs = fourier_embeddings(times).permute(1, 0, 2)
+    cat_queries = torch.cat([queries, embs], dim=-1)
+    # project to d_model
+    cat_queries = proj(cat_queries)
+    cat_queries = norm(cat_queries)
+
+    return cat_queries
 
 
 class TransformerEncoderLayer(nn.Module):

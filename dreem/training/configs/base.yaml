@@ -1,9 +1,22 @@
 model:
   ckpt_path: null
+  # simple encoder config for resnet18 encoder
+  # encoder_cfg: 
+  #   model_name: "resnet18"
+  #   backend: "timm"
+  #   in_chans: 3
+  # below is a sample of the new encoder_cfg structure for different encoder types
   encoder_cfg: 
-    model_name: "resnet18"
-    backend: "timm"
-    in_chans: 3
+    # based on encoder_type, the relevant settings are selected
+    encoder_type: "descriptor"
+    ndim: 5 # dim of the visual feature vector; 5 for descriptor, 12 for descriptor + hu moments
+    resnet:
+      model_name: "resnet18"
+      in_chans: 3
+      backend: "timm"
+      pretrained: false
+    descriptor:
+      use_hu_moments: false
   d_model: 1024
   nhead: 8
   num_encoder_layers: 1
@@ -44,6 +57,18 @@ scheduler:
   patience: 10
   threshold: 1e-4
   threshold_mode: "rel"
+
+  # scheduler: # providing a list of schedulers will apply each scheduler sequentially
+  # name: ["LinearLR", "LinearLR"]
+  # "0": 
+  #   start_factor: 0.1
+  #   end_factor: 1
+  #   total_iters: 3
+  # "1":
+  #   start_factor: 1
+  #   end_factor: 0.1
+  #   total_iters: 30
+  # milestones: [10]
 
 tracker:
   window_size: 8

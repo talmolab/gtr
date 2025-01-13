@@ -1,9 +1,16 @@
 model:
   ckpt_path: null
-  encoder_cfg:
-    model_name: "resnet18"
-    in_chans: 3
-    pretrained: False
+  encoder_cfg: 
+    # based on encoder_type, the relevant settings are selected
+    encoder_type: "resnet"
+    ndim: 5 # dim of the visual feature vector; 5 for descriptor, 12 for descriptor + hu moments
+    resnet:
+      model_name: "resnet18"
+      in_chans: 3
+      backend: "timm"
+      pretrained: false
+    descriptor:
+      use_hu_moments: false
   d_model: 512
   nhead: 8
   num_encoder_layers: 1

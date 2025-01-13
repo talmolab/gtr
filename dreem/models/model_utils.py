@@ -106,7 +106,9 @@ def init_optimizer(params: Iterable, config: dict) -> torch.optim.Optimizer:
     Returns:
         optimizer: A torch.Optimizer with specified params
     """
-    optimizer = config["name"]
+    if config is None:
+        config = {"name": "Adam"}
+    optimizer = config.get("name", "Adam")
     optimizer_params = {
         param: val for param, val in config.items() if param.lower() != "name"
     }
@@ -145,12 +147,34 @@ def init_scheduler(
     Returns:
         scheduler: A scheduler with specified params
     """
-    scheduler = config["name"]
+    if config is None:
+        return None
+    scheduler = config.get("name")
+
+    if scheduler is None:
+        scheduler = "ReduceLROnPlateau"
+
     scheduler_params = {
         param: val for param, val in config.items() if param.lower() != "name"
     }
+
     try:
-        scheduler_class = getattr(torch.optim.lr_scheduler, scheduler)
+        # if a list is provided, apply each one sequentially
+        if isinstance(scheduler, list):
+            schedulers = []
+            milestones = scheduler_params.get("milestones", None)
+            for ix, s in enumerate(scheduler):
+                params = scheduler_params[str(ix)]
+                schedulers.append(
+                    getattr(torch.optim.lr_scheduler, s)(optimizer, **params)
+                )
+            scheduler_class = torch.optim.lr_scheduler.SequentialLR(
+                optimizer, schedulers, milestones
+            )
+            return scheduler_class
+
+        else:
+            scheduler_class = getattr(torch.optim.lr_scheduler, scheduler)
     except AttributeError:
         if scheduler_class is None:
             print(

@@ -17,5 +17,12 @@ dependencies:
   - matplotlib
   - pip
   - pip:
+    - matplotlib
+    - sleap-io
     - "--editable=.[dev]"
+    - imageio[ffmpeg]
+    - hydra-core
+    - motmetrics
+    - seaborn
+    - wandb
     - timm

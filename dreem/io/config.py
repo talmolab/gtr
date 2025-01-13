@@ -40,6 +40,10 @@ class Config:
         else:
             self.cfg = cfg
 
+        OmegaConf.set_struct(self.cfg, False)
+
+        self._vid_files = {}
+
     def __repr__(self):
         """Object representation of config class."""
         return f"Config({self.cfg})"
@@ -57,7 +61,7 @@ class Config:
             params_cfg_path: path to override params.
         """
         base_cfg = OmegaConf.load(base_cfg_path)
-        params_cfg = OmegaConf.load(params_cfg_path) if params_cfg else None
+        params_cfg = OmegaConf.load(params_cfg_path) if params_cfg_path else None
         return cls(base_cfg, params_cfg)
 
     def set_hparams(self, hparams: dict) -> bool:
@@ -83,17 +87,35 @@ class Config:
                 return False
         return True
 
+    def get(self, key: str, default=None, cfg: dict = None):
+        """Get config item.
+
+        Args:
+            key: key of item to return
+            default: default value to return if key is missing.
+            cfg: the config dict from which to retrieve an item
+        """
+        if cfg is None:
+            cfg = self.cfg
+
+        param = cfg.get(key, default)
+
+        if isinstance(param, DictConfig):
+            param = OmegaConf.to_container(param, resolve=True)
+
+        return param
+
     def get_model(self) -> "GlobalTrackingTransformer":
         """Getter for gtr model.
 
         Returns:
             A global tracking transformer with parameters indicated by cfg
         """
-        from dreem.models import GlobalTrackingTransformer
+        from dreem.models import GlobalTrackingTransformer, GTRRunner
 
-        model_params = self.cfg.model
-        with open_dict(model_params):
-            ckpt_path = model_params.pop("ckpt_path", None)
+        model_params = self.get("model", {})
+
+        ckpt_path = model_params.pop("ckpt_path", None)
 
         if ckpt_path is not None and len(ckpt_path) > 0:
             return GTRRunner.load_from_checkpoint(ckpt_path).model
@@ -106,11 +128,7 @@ class Config:
         Returns:
             A dict containing the init params for `Tracker`.
         """
-        tracker_params = self.cfg.tracker
-        tracker_cfg = {}
-        for key, val in tracker_params.items():
-            tracker_cfg[key] = val
-        return tracker_cfg
+        return self.get("tracker", {})
 
     def get_gtr_runner(self, ckpt_path: str | None = None) -> "GTRRunner":
         """Get lightning module for training, validation, and inference.
@@ -123,36 +141,34 @@ class Config:
         """
         from dreem.models import GTRRunner
 
-        tracker_params = self.cfg.tracker
-        optimizer_params = self.cfg.optimizer
-        scheduler_params = self.cfg.scheduler
-        loss_params = self.cfg.loss
-        gtr_runner_params = self.cfg.runner
-        model_params = self.cfg.model
+        keys = ["tracker", "optimizer", "scheduler", "loss", "runner", "model"]
+        args = [key + "_cfg" if key != "runner" else key for key in keys]
 
-        if ckpt_path is None:
-            with open_dict(model_params):
-                ckpt_path = model_params.pop("ckpt_path", None)
+        params = {}
+        for key, arg in zip(keys, args):
+            sub_params = self.get(key, {})
+
+            if len(sub_params) == 0:
+                logger.warning(
+                    f"`{key}` not found in config or is empty. Using defaults for {arg}!"
+                )
+
+            if key == "runner":
+                runner_params = sub_params
+                for k, v in runner_params.items():
+                    params[k] = v
+            else:
+                params[arg] = sub_params
+
+        ckpt_path = params["model_cfg"].pop("ckpt_path", None)
 
         if ckpt_path is not None and ckpt_path != "":
             model = GTRRunner.load_from_checkpoint(
-                ckpt_path,
-                tracker_cfg=tracker_params,
-                train_metrics=self.cfg.runner.metrics.train,
-                val_metrics=self.cfg.runner.metrics.val,
-                test_metrics=self.cfg.runner.metrics.test,
-                test_save_path=self.cfg.runner.save_path,
+                ckpt_path, tracker_cfg=params["tracker_cfg"], **runner_params
             )
 
         else:
-            model = GTRRunner(
-                model_params,
-                tracker_params,
-                loss_params,
-                optimizer_params,
-                scheduler_params,
-                **gtr_runner_params,
-            )
+            model = GTRRunner(**params)
 
         return model
 
@@ -165,30 +181,43 @@ class Config:
         Returns:
             lists of labels file paths and video file paths respectively
         """
-        with open_dict(data_cfg):
-            dir_cfg = data_cfg.pop("dir", None)
+        dir_cfg = data_cfg.pop("dir", None)
         label_files = vid_files = None
+
         if dir_cfg:
-            labels_suff = dir_cfg.labels_suffix
-            vid_suff = dir_cfg.vid_suffix
-            labels_path = f"{dir_cfg.path}/*{labels_suff}"
-            vid_path = f"{dir_cfg.path}/*{vid_suff}"
-            logger.debug(f"Searching for labels matching {labels_path}")
-            label_files = sorted(glob.glob(labels_path))
-            logger.debug(f"Searching for videos matching {vid_path}")
-            vid_files = sorted(glob.glob(vid_path))
+            labels_suff = dir_cfg.get("labels_suffix")
+            vid_suff = dir_cfg.get("vid_suffix")
+            if labels_suff is None or vid_suff is None:
+                raise KeyError(
+                    f"Must provide a labels suffix and vid suffix to search for but found {labels_suff} and {vid_suff}!"
+                )
+            list_dir_path = dir_cfg.get("path", ".")
+            if not isinstance(list_dir_path, list):
+                list_dir_path = [list_dir_path]
+            label_files = []
+            vid_files = []
+            for dir_path in list_dir_path:
+                logger.debug(f"Searching `{dir_path}` directory")
+
+                labels_path = f"{dir_path}/*{labels_suff}"
+                vid_path = f"{dir_path}/*{vid_suff}"
+                logger.debug(f"Searching for labels matching {labels_path}")
+                label_files.extend(glob.glob(labels_path))
+                logger.debug(f"Searching for videos matching {vid_path}")
+                vid_files.extend(glob.glob(vid_path))
+
             logger.debug(f"Found {len(label_files)} labels and {len(vid_files)} videos")
 
         else:
             if "slp_files" in data_cfg:
-                label_files = data_cfg.slp_files
-                vid_files = data_cfg.video_files
+                label_files = data_cfg["slp_files"]
+                vid_files = data_cfg["video_files"]
             elif "tracks" in data_cfg or "source" in data_cfg:
-                label_files = data_cfg.tracks
-                vid_files = data_cfg.videos
+                label_files = data_cfg["tracks"]
+                vid_files = data_cfg["videos"]
             elif "raw_images" in data_cfg:
-                label_files = data_cfg.gt_images
-                vid_files = data_cfg.raw_images
+                label_files = data_cfg["gt_images"]
+                vid_files = data_cfg["raw_images"]
 
         return label_files, vid_files
 
@@ -211,50 +240,128 @@ class Config:
         """
         from dreem.datasets import MicroscopyDataset, SleapDataset, CellTrackingDataset
 
+        dataset_params = self.get("dataset")
+        if dataset_params is None:
+            raise KeyError("`dataset` key is missing from cfg!")
+
         if mode.lower() == "train":
-            dataset_params = self.cfg.dataset.train_dataset
+            dataset_params = self.get("train_dataset", {}, dataset_params)
         elif mode.lower() == "val":
-            dataset_params = self.cfg.dataset.val_dataset
+            dataset_params = self.get("val_dataset", {}, dataset_params)
         elif mode.lower() == "test":
-            dataset_params = self.cfg.dataset.test_dataset
+            dataset_params = self.get("test_dataset", {}, dataset_params)
         else:
             raise ValueError(
                 "`mode` must be one of ['train', 'val','test'], not '{mode}'"
             )
+
+        if "dir" in dataset_params:
+            self.data_dirs = dataset_params["dir"]["path"]
+        else:
+            self.data_dirs = []
+
         if label_files is None or vid_files is None:
-            with open_dict(dataset_params):
-                label_files, vid_files = self.get_data_paths(dataset_params)
+            label_files, vid_files = self.get_data_paths(dataset_params)
         # todo: handle this better
         if "slp_files" in dataset_params:
             if label_files is not None:
-                dataset_params.slp_files = label_files
+                dataset_params["slp_files"] = label_files
             if vid_files is not None:
-                dataset_params.video_files = vid_files
-            dataset = SleapDataset(**dataset_params)
+                dataset_params["video_files"] = vid_files
+
+            dataset_params["data_dirs"] = self.data_dirs
+            # TODO: handle this better!
+            if "model" in self.cfg:
+                if (
+                    "encoder_type" in self.cfg["model"]["encoder_cfg"]
+                    and self.cfg["model"]["encoder_cfg"]["encoder_type"] == "descriptor"
+                ):
+                    dataset_params["normalize_image"] = False
+
+            self.data_paths = (mode, vid_files)
+
+            return SleapDataset(**dataset_params)
 
         elif "tracks" in dataset_params or "source" in dataset_params:
             if label_files is not None:
-                dataset_params.tracks = label_files
+                dataset_params["tracks"] = label_files
             if vid_files is not None:
-                dataset_params.videos = vid_files
-            dataset = MicroscopyDataset(**dataset_params)
+                dataset_params["videos"] = vid_files
+            return MicroscopyDataset(**dataset_params)
 
         elif "raw_images" in dataset_params:
             if label_files is not None:
-                dataset_params.gt_images = label_files
+                dataset_params["gt_images"] = label_files
             if vid_files is not None:
-                dataset_params.raw_images = vid_files
-            dataset = CellTrackingDataset(**dataset_params)
+                dataset_params["raw_images"] = vid_files
+            return CellTrackingDataset(**dataset_params)
 
         else:
             raise ValueError(
                 "Could not resolve dataset type from Config! Please include \
                 either `slp_files` or `tracks`/`source`"
             )
-        if len(dataset) == 0:
-            logger.warn(f"Length of {mode} dataset is {len(dataset)}! Returning None")
-            return None
-        return dataset
+
+
+    @property
+    def data_paths(self):
+        """Get data paths."""
+        return self._vid_files
+
+    @data_paths.setter
+    def data_paths(self, paths: tuple[str, list[str]]):
+        """Set data paths.
+
+        Args:
+            paths: A tuple containing (mode, vid_files)
+        """
+        mode, vid_files = paths
+        self._vid_files[mode] = vid_files
+
+    @property
+    def data_paths(self):
+        """Get data paths."""
+        return self._vid_files
+
+    @data_paths.setter
+    def data_paths(self, paths: tuple[str, list[str]]):
+        """Set data paths.
+
+        Args:
+            paths: A tuple containing (mode, vid_files)
+        """
+        mode, vid_files = paths
+        self._vid_files[mode] = vid_files
+
+    @property
+    def data_paths(self):
+        """Get data paths."""
+        return self._vid_files
+
+    @data_paths.setter
+    def data_paths(self, paths: tuple[str, list[str]]):
+        """Set data paths.
+
+        Args:
+            paths: A tuple containing (mode, vid_files)
+        """
+        mode, vid_files = paths
+        self._vid_files[mode] = vid_files
+
+    @property
+    def data_paths(self):
+        """Get data paths."""
+        return self._vid_files
+
+    @data_paths.setter
+    def data_paths(self, paths: tuple[str, list[str]]):
+        """Set data paths.
+
+        Args:
+            paths: A tuple containing (mode, vid_files)
+        """
+        mode, vid_files = paths
+        self._vid_files[mode] = vid_files
 
     def get_dataloader(
         self,
@@ -271,26 +378,18 @@ class Config:
         Returns:
             A torch dataloader for `dataset` with parameters configured as specified
         """
-        if dataset is None:
-            logger.warn(f"{mode} dataset passed was `None`! Returning `None`")
-            return None
-    
-        elif len(dataset) == 0:
-            logger.warn(f"Length of {mode} dataset is {len(dataset)}! Returning `None`")
-            return None
-        
-
+        dataloader_params = self.get("dataloader", {})
         if mode.lower() == "train":
-            dataloader_params = self.cfg.dataloader.train_dataloader
+            dataloader_params = self.get("train_dataloader", {}, dataloader_params)
         elif mode.lower() == "val":
-            dataloader_params = self.cfg.dataloader.val_dataloader
+            dataloader_params = self.get("val_dataloader", {}, dataloader_params)
         elif mode.lower() == "test":
-            dataloader_params = self.cfg.dataloader.test_dataloader
+            dataloader_params = self.get("test_dataloader", {}, dataloader_params)
         else:
             raise ValueError(
                 "`mode` must be one of ['train', 'val','test'], not '{mode}'"
             )
-        if dataloader_params.num_workers > 0:
+        if dataloader_params.get("num_workers", 0) > 0:
             # prevent too many open files error
             pin_memory = True
             torch.multiprocessing.set_sharing_strategy("file_system")
@@ -324,13 +423,13 @@ class Config:
         """
         from dreem.models.model_utils import init_optimizer
 
-        optimizer_params = self.cfg.optimizer
+        optimizer_params = self.get("optimizer")
 
         return init_optimizer(params, optimizer_params)
 
     def get_scheduler(
         self, optimizer: torch.optim.Optimizer
-    ) -> torch.optim.lr_scheduler.LRScheduler:
+    ) -> torch.optim.lr_scheduler.LRScheduler | None:
         """Getter for lr scheduler.
 
         Args:
@@ -341,8 +440,13 @@ class Config:
         """
         from dreem.models.model_utils import init_scheduler
 
-        lr_scheduler_params = self.cfg.scheduler
+        lr_scheduler_params = self.get("scheduler")
 
+        if lr_scheduler_params is None:
+            logger.warning(
+                "`scheduler` key not found in cfg or is empty. No scheduler will be returned!"
+            )
+            return None
         return init_scheduler(optimizer, lr_scheduler_params)
 
     def get_loss(self) -> "dreem.training.losses.AssoLoss":
@@ -353,7 +457,12 @@ class Config:
         """
         from dreem.training.losses import AssoLoss
 
-        loss_params = self.cfg.loss
+        loss_params = self.get("loss", {})
+
+        if len(loss_params) == 0:
+            logger.warning(
+                "`loss` key not found in cfg. Using default params for `AssoLoss`"
+            )
 
         return AssoLoss(**loss_params)
 
@@ -365,7 +474,11 @@ class Config:
         """
         from dreem.models.model_utils import init_logger
 
-        logger_params = OmegaConf.to_container(self.cfg.logging, resolve=True)
+        logger_params = self.get("logging", {})
+        if len(logger_params) == 0:
+            logger.warning(
+                "`logging` key not found in cfg. No logger will be configured!"
+            )
 
         return init_logger(
             logger_params, OmegaConf.to_container(self.cfg, resolve=True)
@@ -377,7 +490,15 @@ class Config:
         Returns:
             A lightning early stopping callback with specified params
         """
-        early_stopping_params = self.cfg.early_stopping
+        early_stopping_params = self.get("early_stopping", None)
+
+        if early_stopping_params is None:
+            logger.warning(
+                "`early_stopping` was not found in cfg or was `null`. Early stopping will not be used!"
+            )
+            return None
+        elif len(early_stopping_params) == 0:
+            logger.warning("`early_stopping` cfg is empty! Using defaults")
         return pl.callbacks.EarlyStopping(**early_stopping_params)
 
     def get_checkpointing(self) -> pl.callbacks.ModelCheckpoint:
@@ -387,14 +508,13 @@ class Config:
             A lightning checkpointing callback with specified params
         """
         # convert to dict to enable extracting/removing params
-        checkpoint_params = self.cfg.checkpointing
-        logging_params = self.cfg.logging
+        checkpoint_params = self.get("checkpointing", {})
+        logging_params = self.get("logging", {})
+
         dirpath = checkpoint_params.pop("dirpath", None)
+
         if dirpath is None:
-            if "group" in logging_params:
-                dirpath = f"./models/{logging_params.group}/{logging_params.name}"
-            else:
-                dirpath = f"./models/{logging_params.name}"
+            dirpath = f"./models/{self.get('group', '', logging_params)}/{self.get('name', '', logging_params)}"
 
         dirpath = Path(dirpath).resolve()
         if not Path(dirpath).exists():
@@ -402,12 +522,21 @@ class Config:
                 Path(dirpath).mkdir(parents=True, exist_ok=True)
             except OSError as e:
                 logger.exception(
-                    f"Cannot create a new folder. Check the permissions to the given Checkpoint directory. \n {e}"
+                    f"Cannot create a new folder!. Check the permissions to {dirpath}. \n {e}"
                 )
-        with open_dict(checkpoint_params):
-            _ = checkpoint_params.pop("dirpath", None)
-            monitor = checkpoint_params.pop("monitor", ["val_loss"])
+
+        _ = checkpoint_params.pop("dirpath", None)
+        monitor = checkpoint_params.pop("monitor", ["val_loss"])
         checkpointers = []
+
+        logger.info(
+            f"Saving checkpoints to `{dirpath}` based on the following metrics: {monitor}"
+        )
+        if len(checkpoint_params) == 0:
+            logger.warning(
+                """`checkpointing` key was not found in cfg or was empty!
+                Configuring checkpointing to use default params!"""
+            )
 
         for metric in monitor:
             checkpointer = pl.callbacks.ModelCheckpoint(
@@ -439,22 +568,33 @@ class Config:
         Returns:
             A lightning Trainer with specified params
         """
-        if "trainer" in self.cfg:
-            trainer_params = OmegaConf.to_container(self.cfg.trainer, resolve=True)
-
-        else:
-            trainer_params = {}
-
+        trainer_params = self.get("trainer", {})
         profiler = trainer_params.pop("profiler", None)
+        if len(trainer_params) == 0:
+            print(
+                "`trainer` key was not found in cfg or was empty. Using defaults for `pl.Trainer`!"
+            )
+
         if "accelerator" not in trainer_params:
             trainer_params["accelerator"] = accelerator
         if "devices" not in trainer_params:
             trainer_params["devices"] = devices
 
-        if "profiler":
-            profiler = pl.profilers.AdvancedProfiler(filename="profile.txt")
-        else:
-            profiler = None
+        map_profiler = {
+            "advanced": pl.profilers.AdvancedProfiler,
+            "simple": pl.profilers.SimpleProfiler,
+            "pytorch": pl.profilers.PyTorchProfiler,
+            "passthrough": pl.profilers.PassThroughProfiler,
+            "xla": pl.profilers.XLAProfiler,
+        }
+
+        if profiler:
+            if profiler in map_profiler:
+                profiler = map_profiler[profiler](filename="profile")
+            else:
+                raise ValueError(
+                    f"Profiler {profiler} not supported! Please use one of {list(map_profiler.keys())}"
+                )
 
         return pl.Trainer(
             callbacks=callbacks,

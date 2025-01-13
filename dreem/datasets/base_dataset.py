@@ -3,6 +3,7 @@
 from dreem.datasets import data_utils
 from dreem.io import Frame
 from torch.utils.data import Dataset
+from typing import Union
 import numpy as np
 import torch
 
@@ -15,7 +16,7 @@ class BaseDataset(Dataset):
         label_files: list[str],
         vid_files: list[str],
         padding: int,
-        crop_size: int,
+        crop_size: Union[int, list[int]],
         chunk: bool,
         clip_length: int,
         mode: str,

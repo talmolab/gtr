@@ -1,15 +1,20 @@
 """Module for different visual feature extractors."""
 
-from typing import Any
+from typing import Any, Type, Dict
 import torch
 import torchvision
 import timm
 import torch.nn.functional as F
+import skimage.measure as measure
+from skimage.feature import local_binary_pattern
+import numpy as np
 
 # import timm
 
 # todo: do we want to make timm a dependency?
 # todo: add named tensor support
+
+ENCODER_REGISTRY: Dict[str, Type[torch.nn.Module]] = {}
 
 
 class VisualEncoder(torch.nn.Module):
@@ -137,7 +142,15 @@ class VisualEncoder(torch.nn.Module):
         # If grayscale, tile the image to 3 channels.
         if img.shape[1] == 1:
             img = img.repeat([1, 3, 1, 1])  # (B, nc=3, H, W)
-        # Extract image features
+
+        b, c, h, w = img.shape
+
+        if c != self.in_chans:
+            raise ValueError(
+                f"""Found {c} channels in image but model was configured for {self.in_chans} channels! \n
+                    Hint: have you set the number of anchors in your dataset > 1? \n
+                    If so, make sure to set `in_chans=3 * n_anchors`"""
+            )
         feats = self.feature_extractor(
             img
         )  # (B, out_dim, 1, 1) if using resnet18 backbone.
@@ -149,3 +162,89 @@ class VisualEncoder(torch.nn.Module):
         # Normalize output feature vectors.
         feats = F.normalize(feats)  # (B, d_model)
         return feats
+
+
+class DescriptorVisualEncoder(torch.nn.Module):
+    """Visual Encoder based on image descriptors."""
+
+    def __init__(self, use_hu_moments: bool = False, **kwargs):
+        """Initialize Descriptor Visual Encoder.
+
+        Args:
+            use_hu_moments: Whether to use Hu moments.
+        """
+        super().__init__()
+        self.use_hu_moments = use_hu_moments
+
+    def compute_hu_moments(self, img):
+        """Compute Hu moments."""
+        mu = measure.moments_central(img)
+        nu = measure.moments_normalized(mu)
+        hu = measure.moments_hu(nu)
+        # log transform hu moments for scale differences; switched off; numerically unstable
+        # hu_log = -np.sign(hu) * np.log(np.abs(hu))
+
+        return hu
+
+    def compute_inertia_tensor(self, img):
+        """Compute inertia tensor."""
+        return measure.inertia_tensor(img)
+
+    @torch.no_grad()
+    def forward(self, img: torch.Tensor) -> torch.Tensor:
+        """Forward pass of feature extractor to get feature vector."""
+        descriptors = []
+
+        for im in img:
+            im = im[0].cpu().numpy()
+
+            inertia_tensor = self.compute_inertia_tensor(im)
+            mean_intensity = im.mean()
+            if self.use_hu_moments:
+                hu_moments = self.compute_hu_moments(im)
+
+            # Flatten inertia tensor
+            inertia_tensor_flat = inertia_tensor.flatten()
+
+            # Combine all features into a single descriptor
+            descriptor = np.concatenate(
+                [
+                    inertia_tensor_flat,
+                    [mean_intensity],
+                    hu_moments if self.use_hu_moments else [],
+                ]
+            )
+
+            descriptors.append(torch.tensor(descriptor, dtype=torch.float32))
+
+        return torch.stack(descriptors)
+
+
+def register_encoder(encoder_type: str, encoder_class: Type[torch.nn.Module]):
+    """Register a new encoder type."""
+    if not issubclass(encoder_class, torch.nn.Module):
+        raise ValueError(f"{encoder_class} must be a subclass of torch.nn.Module")
+    ENCODER_REGISTRY[encoder_type] = encoder_class
+
+
+def create_visual_encoder(d_model: int, **encoder_cfg) -> torch.nn.Module:
+    """Create a visual encoder based on the specified type."""
+    register_encoder("resnet", VisualEncoder)
+    register_encoder("descriptor", DescriptorVisualEncoder)
+    # register any custom encoders here
+
+    # compatibility with configs that don't specify encoder_type; default to resnet
+    if not encoder_cfg or "encoder_type" not in encoder_cfg:
+        encoder_type = "resnet"
+        return ENCODER_REGISTRY[encoder_type](d_model=d_model, **encoder_cfg)
+    else:
+        encoder_type = encoder_cfg.pop("encoder_type")
+
+    if encoder_type in ENCODER_REGISTRY:
+        # choose the relevant encoder configs based on the encoder_type
+        configs = encoder_cfg[encoder_type]
+        return ENCODER_REGISTRY[encoder_type](d_model=d_model, **configs)
+    else:
+        raise ValueError(
+            f"Unknown encoder type: {encoder_type}. Please use one of {list(ENCODER_REGISTRY.keys())}"
+        )

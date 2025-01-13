@@ -163,6 +163,48 @@ def test_sleap_dataset(two_flies):
 
     assert len(train_ds) == ds_length
 
+    with pytest.raises(Exception):
+        train_ds = SleapDataset(
+            slp_files=[two_flies[0]],
+            video_files=[two_flies[1]],
+            data_dirs="./data/sleap",
+            crop_size=[128, 128],
+            chunk=True,
+            clip_length=clip_length,
+            n_chunks=ds_length + 10000,
+        )
+
+    with pytest.raises(Exception):
+        train_ds = SleapDataset(
+            slp_files=[two_flies[0]],
+            video_files=[two_flies[1]],
+            data_dirs=["./data/sleap", "./data/microscopy"],
+            crop_size=[128],
+            chunk=True,
+            clip_length=clip_length,
+            n_chunks=ds_length + 10000,
+        )
+
+    train_ds = SleapDataset(
+        slp_files=[two_flies[0]],
+        video_files=[two_flies[1]],
+        data_dirs=["./data/sleap"],
+        crop_size=128,
+        chunk=True,
+        clip_length=clip_length,
+        n_chunks=ds_length + 10000,
+    )
+
+    train_ds = SleapDataset(
+        slp_files=[two_flies[0]],
+        video_files=[two_flies[1]],
+        data_dirs=["./data/sleap", "./data/microscopy"],
+        crop_size=128,
+        chunk=True,
+        clip_length=clip_length,
+        n_chunks=ds_length + 10000,
+    )
+
 
 def test_icy_dataset(ten_icy_particles):
     """Test icy dataset logic.
