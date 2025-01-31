@@ -6,6 +6,9 @@ from torch.utils.data import Dataset
 from typing import Union
 import numpy as np
 import torch
+import logging
+
+logger = logging.getLogger("dreem.datasets")
 
 
 class BaseDataset(Dataset):
@@ -109,6 +112,23 @@ class BaseDataset(Dataset):
                 self.chunked_frame_idx = [self.chunked_frame_idx[i] for i in sample_idx]
 
                 self.label_idx = [self.label_idx[i] for i in sample_idx]
+
+            # workaround for empty batch bug (needs to be changed). Check for batch with with only 1/10 size of clip length. Arbitrary thresholds
+            remove_idx = []
+            for i, frame_chunk in enumerate(self.chunked_frame_idx):
+                if (
+                    len(frame_chunk)
+                    <= min(int(self.clip_length / 10), 5)
+                    # and frame_chunk[-1] % self.clip_length == 0
+                ):
+                    logger.warning(
+                        f"Warning: Batch containing frames {frame_chunk} from video {self.vid_files[self.label_idx[i]]} has {len(frame_chunk)} frames. Removing to avoid empty batch possibility with failed frame loading"
+                    )
+                    remove_idx.append(i)
+            if len(remove_idx) > 0:
+                for i in sorted(remove_idx, reverse=True):
+                    self.chunked_frame_idx.pop(i)
+                    self.label_idx.pop(i)
 
         else:
             self.chunked_frame_idx = self.frame_idx

@@ -160,7 +160,8 @@ def filter_max_center_dist(
         valid = dist.squeeze() < max_center_dist  # n_k x n_nonk
         # handle case where id_inds and valid is a single value
         # handle this better
-        if valid.ndim == 0: valid = valid.unsqueeze(0)
+        if valid.ndim == 0:
+            valid = valid.unsqueeze(0)
         if valid.ndim == 1:
             if id_inds.shape[0] == 1:
                 valid_mult = valid.float().unsqueeze(-1)
